@@ -25,6 +25,7 @@ Los cambios se agrupan en las siguientes categorías:
 
 - Fichero CONTRIBUTING.md con el flujo de trabajo Trunk Based Development, convenciones de commits, guía de Pull Requests y buenas prácticas para desarrollo asistido con IA.
 - Fichero CHANGELOG.md con el formato Keep a Changelog v1.1.0 en castellano.
+- Fichero README.md con la descripción completa del proyecto, arquitectura de la cola secuencial de reproducción, guía de instalación de servicio de usuario de systemd y buenas prácticas.
 
 ---
 

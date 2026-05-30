@@ -26,6 +26,13 @@ Los cambios se agrupan en las siguientes categorías:
 - Fichero CONTRIBUTING.md con el flujo de trabajo Trunk Based Development, convenciones de commits, guía de Pull Requests y buenas prácticas para desarrollo asistido con IA.
 - Fichero CHANGELOG.md con el formato Keep a Changelog v1.1.0 en castellano.
 - Fichero README.md con la descripción completa del proyecto, arquitectura de la cola secuencial de reproducción, guía de instalación de servicio de usuario de systemd y buenas prácticas.
+- Fichero `requirements.txt` con dependencias `watchdog>=4.0.0` y `python-dotenv>=1.0.1`.
+- Fichero `.env.example` con plantilla de configuración de variables de entorno (`WATCHDOG_DIR`, `LOG_LEVEL`, `MPV_PATH`).
+- Módulo `src/config.py`: carga y validación de variables de entorno; crea el directorio vigilado si no existe.
+- Módulo `src/watcher.py`: manejador reactivo de eventos de sistema de archivos (`AudioFolderHandler`) con filtrado por extensión `.wav` y comprobación de estabilidad de archivo antes de encolar.
+- Módulo `src/player.py`: hilo consumidor thread-safe (`AudioPlayerWorker`) con cola FIFO secuencial, reproducción mediante subproceso `mpv` y eliminación garantizada del archivo tras reproducción, exitosa o fallida.
+- Módulo `src/main.py`: punto de entrada del servicio con configuración de logging hacia `journald`, orquestación de hilos y apagado ordenado (graceful shutdown) ante señales `SIGINT`/`SIGTERM`.
+- Suite de pruebas unitarias en `tests/`: `test_player.py` y `test_watcher.py` con 9 casos de prueba, cobertura de escenarios exitosos, errores de `mpv` y timeouts de estabilización.
 
 ---
 

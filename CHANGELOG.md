@@ -19,7 +19,7 @@ Los cambios se agrupan en las siguientes categorías:
 
 ---
 
-## [Sin publicar]
+## [1.0.0] - 2026-05-31
 
 ### Añadido
 
@@ -34,6 +34,8 @@ Los cambios se agrupan en las siguientes categorías:
 - Módulo `src/main.py`: punto de entrada del servicio con configuración de logging hacia `journald`, orquestación de hilos y apagado ordenado (graceful shutdown) ante señales `SIGINT`/`SIGTERM`.
 - Suite de pruebas unitarias en `tests/`: `test_player.py` y `test_watcher.py` con 9 casos de prueba, cobertura de escenarios exitosos, errores de `mpv` y timeouts de estabilización.
 - Pipeline de CI en `.github/workflows/ci.yml`: ejecuta los tests unitarios automáticamente en cada Pull Request dirigida a `main` mediante GitHub Actions (Python 3.11, `unittest discover`).
+
+## [Sin publicar]
 
 ---
 

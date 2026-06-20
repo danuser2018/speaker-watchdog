@@ -19,6 +19,12 @@ Los cambios se agrupan en las siguientes categorías:
 
 ---
 
+## Sin publicar
+
+### Añadido
+
+- Documentación para realizar el refactor hacia mpv daemon
+
 ## [1.0.0] - 2026-05-31
 
 ### Añadido
@@ -35,9 +41,7 @@ Los cambios se agrupan en las siguientes categorías:
 - Suite de pruebas unitarias en `tests/`: `test_player.py` y `test_watcher.py` con 9 casos de prueba, cobertura de escenarios exitosos, errores de `mpv` y timeouts de estabilización.
 - Pipeline de CI en `.github/workflows/ci.yml`: ejecuta los tests unitarios automáticamente en cada Pull Request dirigida a `main` mediante GitHub Actions (Python 3.11, `unittest discover`).
 
-## [Sin publicar]
-
----
+--
 
 <!-- Plantilla para nuevas versiones:
 

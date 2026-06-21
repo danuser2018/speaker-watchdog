@@ -1,4 +1,3 @@
-import queue
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 from pathlib import Path
@@ -6,15 +5,16 @@ from watchdog.events import FileCreatedEvent, FileMovedEvent
 
 from src.watcher import AudioFolderHandler
 
+
 class TestAudioFolderHandler(unittest.TestCase):
     def setUp(self):
-        self.audio_queue = queue.Queue()
+        self.mock_player = MagicMock()
         # Set a short timeout for tests
-        self.handler = AudioFolderHandler(audio_queue=self.audio_queue, stability_timeout=1.0)
+        self.handler = AudioFolderHandler(player=self.mock_player, stability_timeout=1.0)
 
     @patch("src.watcher.AudioFolderHandler._wait_for_file_ready")
     def test_on_created_wav_file(self, mock_ready):
-        """Tests that a valid .wav file creation triggers queuing after stabilizing."""
+        """Tests that a valid .wav file creation triggers player.play() after stabilizing."""
         # Arrange
         mock_ready.return_value = True
         test_path = "/watched/folder/alert.wav"
@@ -26,12 +26,11 @@ class TestAudioFolderHandler(unittest.TestCase):
 
         # Assert
         mock_ready.assert_called_once_with(expected_resolved_path)
-        self.assertEqual(self.audio_queue.qsize(), 1)
-        self.assertEqual(self.audio_queue.get(), expected_resolved_path)
+        self.mock_player.play.assert_called_once_with(expected_resolved_path)
 
     @patch("src.watcher.AudioFolderHandler._wait_for_file_ready")
     def test_on_created_non_wav_file(self, mock_ready):
-        """Tests that non-wav files (like .txt) are ignored and not queued."""
+        """Tests that non-wav files (like .txt) are ignored and player.play() is never called."""
         # Arrange
         event = FileCreatedEvent("/watched/folder/document.txt")
 
@@ -40,11 +39,11 @@ class TestAudioFolderHandler(unittest.TestCase):
 
         # Assert
         mock_ready.assert_not_called()
-        self.assertEqual(self.audio_queue.qsize(), 0)
+        self.mock_player.play.assert_not_called()
 
     @patch("src.watcher.AudioFolderHandler._wait_for_file_ready")
     def test_on_moved_wav_file(self, mock_ready):
-        """Tests that moving/renaming a WAV file into the folder triggers queuing."""
+        """Tests that moving/renaming a WAV file into the folder triggers player.play()."""
         # Arrange
         mock_ready.return_value = True
         dest_path = "/watched/folder/new_alert.WAV"
@@ -56,8 +55,21 @@ class TestAudioFolderHandler(unittest.TestCase):
 
         # Assert
         mock_ready.assert_called_once_with(expected_resolved_path)
-        self.assertEqual(self.audio_queue.qsize(), 1)
-        self.assertEqual(self.audio_queue.get(), expected_resolved_path)
+        self.mock_player.play.assert_called_once_with(expected_resolved_path)
+
+    @patch("src.watcher.AudioFolderHandler._wait_for_file_ready")
+    def test_on_created_wav_file_not_stable_skips_play(self, mock_ready):
+        """Tests that player.play() is NOT called when the file fails to stabilize."""
+        # Arrange
+        mock_ready.return_value = False
+        event = FileCreatedEvent("/watched/folder/partial.wav")
+
+        # Act
+        self.handler.on_created(event)
+
+        # Assert
+        mock_ready.assert_called_once()
+        self.mock_player.play.assert_not_called()
 
     @patch("src.watcher.time.sleep")
     @patch("src.watcher.Path.exists")

@@ -23,7 +23,21 @@ Los cambios se agrupan en las siguientes categorías:
 
 ### Añadido
 
-- Documentación para realizar el refactor hacia mpv daemon
+- Documentación para realizar el refactor hacia mpv daemon (`docs/refactor_mpv_daemon.md`).
+- Clase `MpvDaemonPlayer` en `src/player.py`: gestiona un proceso `mpv` persistente en modo idle con interfaz IPC mediante Unix socket (`/tmp/speaker-watchdog.sock`), recuperación automática ante fallos del daemon y lógica de reintento.
+- Suite de tests para `MpvDaemonPlayer` en `tests/test_player.py`: 11 casos de prueba que cubren reproducción exitosa, archivo inexistente, reintento tras fallo de socket, borrado garantizado del archivo, comando IPC correcto, arranque y parada del daemon, y comportamiento de SIGTERM/SIGKILL.
+
+### Cambiado
+
+- `src/player.py`: refactor completo. Se sustituye `AudioPlayerWorker` (hilo consumidor con `queue.Queue` y procesos `mpv` efímeros) por `MpvDaemonPlayer` (instancia mpv persistente con control IPC). El nuevo comportamiento es: el último sonido recibido siempre reemplaza al anterior (`loadfile ... replace`), sin cola y sin espera.
+- `src/watcher.py`: `AudioFolderHandler` recibe ahora un `player` (`MpvDaemonPlayer`) en lugar de `audio_queue` (`queue.Queue`). Llama a `player.play(filepath)` directamente tras estabilizar el archivo.
+- `src/main.py`: eliminada la creación de `queue.Queue`. El `MpvDaemonPlayer` se inicializa y se pasa directamente al `AudioFolderHandler`.
+- `tests/test_watcher.py`: actualizado para usar un mock de `MpvDaemonPlayer` como colaborador del handler en lugar de `queue.Queue`. Añadido test explícito para el caso de archivo no estabilizado.
+
+### Eliminado
+
+- Clase `AudioPlayerWorker` y toda la lógica asociada: `queue.Queue`, hilo consumidor (`threading.Thread`), patrón Productor/Consumidor y espera bloqueante sobre la cola.
+- Dependencia de `subprocess.run` síncrono por cada archivo de audio.
 
 ## [1.0.0] - 2026-05-31
 

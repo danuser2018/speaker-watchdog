@@ -19,7 +19,7 @@ Los cambios se agrupan en las siguientes categorías:
 
 ---
 
-## Sin publicar
+## [1.1.0] - 2026-06-21
 
 ### Añadido
 

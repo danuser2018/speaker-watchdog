@@ -142,12 +142,31 @@ class TestMpvDaemonPlayerSendLoadfile(unittest.TestCase):
 
     @patch("src.player.MpvDaemonPlayer._restart_daemon")
     @patch("src.player.socket.socket")
+    def test_send_loadfile_socket_missing_on_retry_does_not_restart(
+        self, mock_socket_cls, mock_restart
+    ):
+        """
+        Tests that a missing socket on a retry attempt gives up without restarting
+        the daemon again, avoiding an infinite restart loop.
+        """
+        mock_sock = MagicMock()
+        mock_sock.connect.side_effect = FileNotFoundError("No such file")
+        mock_socket_cls.return_value.__enter__.return_value = mock_sock
+        test_file = Path("/watched/folder/alert.wav")
+
+        result = self.player._send_loadfile(test_file, retry=True)
+
+        self.assertFalse(result)
+        mock_restart.assert_not_called()
+
+    @patch("src.player.MpvDaemonPlayer._restart_daemon")
+    @patch("src.player.socket.socket")
     def test_send_loadfile_retry_does_not_restart_again(
         self, mock_socket_cls, mock_restart
     ):
         """
-        Tests that on a retry attempt that also fails, the daemon is NOT restarted
-        again (giving up gracefully instead of entering a restart loop).
+        Tests that on a retry attempt that also fails with a connection error,
+        the daemon is NOT restarted again (giving up gracefully).
         """
         mock_sock = MagicMock()
         mock_sock.connect.side_effect = ConnectionRefusedError("Connection refused")
@@ -208,6 +227,7 @@ class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
         """Tests that _start_daemon launches mpv with the expected arguments."""
         mock_process = MagicMock()
         mock_process.pid = 42
+        mock_process.poll.return_value = None  # process is still alive
         mock_popen.return_value = mock_process
 
         self.player._start_daemon()
@@ -221,8 +241,22 @@ class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
                 f"--input-ipc-server={self.player.socket_path}",
             ],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
+
+    @patch("src.player.MpvDaemonPlayer._wait_for_socket")
+    @patch("src.player.subprocess.Popen")
+    def test_start_daemon_raises_if_process_exits_early(self, mock_popen, mock_wait):
+        """Tests that _start_daemon raises RuntimeError if mpv exits before the socket is ready."""
+        mock_process = MagicMock()
+        mock_process.pid = 42
+        mock_process.returncode = 1
+        mock_process.poll.return_value = 1  # process already dead
+        mock_popen.return_value = mock_process
+
+        with self.assertRaises(RuntimeError):
+            self.player._start_daemon()
+
+        self.assertIsNone(self.player._process)
 
     def test_terminate_daemon_sends_sigterm(self):
         """Tests that _terminate_daemon calls terminate() and wait() on the process."""

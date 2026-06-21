@@ -106,6 +106,12 @@ class MpvDaemonPlayer:
 
         except FileNotFoundError:
             # The socket file does not exist at all.
+            if retry:
+                logger.error(
+                    f"IPC socket still missing on retry for '{filepath.name}'. "
+                    "Giving up on this file."
+                )
+                return False
             logger.warning(
                 f"IPC socket not found at '{self.socket_path}'. "
                 "Attempting to restart mpv daemon..."
@@ -174,10 +180,23 @@ class MpvDaemonPlayer:
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                # stderr intentionally not suppressed: mpv errors flow to journald
+                # alongside the service logs, making failures diagnosable.
             )
             # Give mpv a moment to create the socket before we try to use it.
             self._wait_for_socket()
+
+            returncode = self._process.poll()
+            if returncode is not None:
+                logger.error(
+                    f"mpv daemon exited prematurely with code {returncode}. "
+                    "Check journald output above for mpv error details."
+                )
+                self._process = None
+                raise RuntimeError(
+                    f"mpv daemon failed to start (exit code {returncode})."
+                )
+
             logger.info(f"mpv daemon started (PID {self._process.pid}).")
         except FileNotFoundError:
             logger.critical(
@@ -224,6 +243,13 @@ class MpvDaemonPlayer:
         """Blocks until the IPC socket becomes responsive or the timeout expires."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            # Exit early if mpv has already died — no point waiting for its socket.
+            if self._process is not None and self._process.poll() is not None:
+                logger.error(
+                    f"mpv process exited with code {self._process.returncode} "
+                    "before the IPC socket became available."
+                )
+                return
             if self._is_socket_responsive():
                 return
             time.sleep(interval)

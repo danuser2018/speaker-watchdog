@@ -34,9 +34,16 @@ Los cambios se agrupan en las siguientes categorías:
 - `src/main.py`: eliminada la creación de `queue.Queue`. El `MpvDaemonPlayer` se inicializa y se pasa directamente al `AudioFolderHandler`.
 - `tests/test_watcher.py`: actualizado para usar un mock de `MpvDaemonPlayer` como colaborador del handler en lugar de `queue.Queue`. Añadido test explícito para el caso de archivo no estabilizado.
 
+### Corregido
+
+- `src/player.py` (`_send_loadfile`): `FileNotFoundError` durante el intento de retry ya no dispara un nuevo `_restart_daemon()`, evitando un bucle infinito de reinicios del daemon.
+- `src/player.py` (`_start_daemon`): la salida `stderr` de mpv ya no se suprime con `DEVNULL`; fluye a journald junto con los logs del servicio para facilitar el diagnóstico de fallos de arranque.
+- `src/player.py` (`_start_daemon` y `_wait_for_socket`): se detecta muerte temprana del proceso mpv (antes de que el socket esté disponible) y se lanza `RuntimeError`, en lugar de continuar silenciosamente con el servicio en estado no funcional.
+
 ### Eliminado
 
 - Clase `AudioPlayerWorker` y toda la lógica asociada: `queue.Queue`, hilo consumidor (`threading.Thread`), patrón Productor/Consumidor y espera bloqueante sobre la cola.
+
 - Dependencia de `subprocess.run` síncrono por cada archivo de audio.
 
 ## [1.0.0] - 2026-05-31

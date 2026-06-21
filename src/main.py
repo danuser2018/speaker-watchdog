@@ -1,7 +1,5 @@
-import os
 import sys
 import time
-import queue
 import signal
 import logging
 from pathlib import Path
@@ -16,7 +14,7 @@ from watchdog.observers import Observer
 
 # Import local modules
 from config import Config
-from player import AudioPlayerWorker
+from player import MpvDaemonPlayer
 from watcher import AudioFolderHandler
 
 def main():
@@ -43,15 +41,16 @@ def main():
     logger.info("Initializing speaker-watchdog service...")
     logger.info(f"Loaded Configuration: {config}")
 
-    # 3. Initialize Thread-Safe Queue
-    audio_queue = queue.Queue()
+    # 3. Initialize and Start the mpv Daemon Player
+    player = MpvDaemonPlayer(mpv_path=config.mpv_path)
+    try:
+        player.start()
+    except Exception as e:
+        logger.critical(f"Failed to start mpv daemon player: {e}")
+        sys.exit(1)
 
-    # 4. Initialize and Start Audio Playback Consumer Worker
-    player = AudioPlayerWorker(audio_queue=audio_queue, mpv_path=config.mpv_path)
-    player.start()
-
-    # 5. Initialize and Start Filesystem Watcher Observer
-    handler = AudioFolderHandler(audio_queue=audio_queue)
+    # 4. Initialize and Start Filesystem Watcher Observer
+    handler = AudioFolderHandler(player=player)
     observer = Observer()
     observer.schedule(handler, path=str(config.watch_dir), recursive=False)
     
@@ -63,7 +62,7 @@ def main():
         player.stop()
         sys.exit(1)
 
-    # 6. Graceful Shutdown Signal Handlers
+    # 5. Graceful Shutdown Signal Handlers
     running = True
 
     def signal_handler(signum, frame):
@@ -78,22 +77,22 @@ def main():
 
     logger.info("Service is up and running. Waiting for events...")
 
-    # 7. Main Loop Keep-Alive
+    # 6. Main Loop Keep-Alive
     try:
         while running:
             time.sleep(0.2)
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt detected. Initiating graceful shutdown...")
     finally:
-        # 8. Clean Resource Cleanup
+        # 7. Clean Resource Cleanup
         logger.info("Stopping filesystem observer...")
         observer.stop()
         observer.join()
         logger.info("Filesystem observer stopped.")
 
-        logger.info("Stopping audio playback worker...")
+        logger.info("Stopping mpv daemon player...")
         player.stop()
-        logger.info("Audio playback worker stopped.")
+        logger.info("mpv daemon player stopped.")
 
         logger.info("Service shutdown procedure completed successfully. Exiting.")
 

@@ -1,106 +1,245 @@
-import queue
-import subprocess
-import threading
+import json
 import logging
+import os
+import socket
+import subprocess
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-class AudioPlayerWorker:
+_MPV_SOCKET_PATH = "/tmp/speaker-watchdog.sock"
+_IPC_CONNECT_TIMEOUT = 2.0   # seconds to wait for socket connection
+_IPC_SEND_TIMEOUT = 2.0       # seconds to wait for socket send
+
+
+class MpvDaemonPlayer:
     """
-    Worker class that runs a background thread to consume audio files from a Queue,
-    plays them sequentially using the 'mpv' player, and deletes them immediately after.
+    Manages a persistent mpv process running in daemon mode with a Unix IPC socket.
+
+    Instead of spawning a new mpv process per audio file, this class keeps a single
+    mpv instance alive and sends JSON commands over the IPC socket to trigger playback.
+
+    The 'replace' mode ensures any currently playing sound is interrupted immediately
+    and replaced by the incoming one — no queue, no waiting.
     """
-    def __init__(self, audio_queue: queue.Queue, mpv_path: str = "mpv"):
-        self.queue = audio_queue
+
+    def __init__(self, mpv_path: str = "mpv", socket_path: str = _MPV_SOCKET_PATH):
         self.mpv_path = mpv_path
-        self._thread = None
-        self._stop_event = threading.Event()
+        self.socket_path = socket_path
+        self._process: subprocess.Popen | None = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def start(self):
-        """Starts the background worker thread."""
-        if self._thread is not None:
-            logger.warning("Audio player worker thread is already running.")
-            return
-
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="AudioPlayerWorkerThread", daemon=True)
-        self._thread.start()
-        logger.info("Audio player worker thread started successfully.")
+        """
+        Ensures the mpv daemon is running and the IPC socket is responsive.
+        Called once during service initialization.
+        """
+        logger.info("Initializing mpv daemon player...")
+        self._ensure_daemon_running()
+        logger.info("mpv daemon player ready.")
 
     def stop(self):
-        """Signals the worker thread to stop and waits for it to exit."""
-        logger.info("Stopping audio player worker thread...")
-        self._stop_event.set()
-        
-        # Enqueue None as a sentinel value to unblock the get() call
-        self.queue.put(None)
-        
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
-            if self._thread.is_alive():
-                logger.warning("Audio player worker thread did not terminate within timeout.")
-            else:
-                logger.info("Audio player worker thread stopped cleanly.")
-            self._thread = None
+        """
+        Terminates the mpv daemon process and removes the socket file.
+        Called during service shutdown.
+        """
+        logger.info("Stopping mpv daemon player...")
+        self._terminate_daemon()
+        logger.info("mpv daemon player stopped.")
 
-    def _run(self):
-        """Main loop of the worker thread."""
-        while not self._stop_event.is_set():
-            try:
-                # Wait for a new audio file path with a short timeout to check stop_event regularly
-                filepath = self.queue.get(block=True, timeout=1.0)
-            except queue.Empty:
-                continue
+    def play(self, filepath: Path):
+        """
+        Sends a 'loadfile ... replace' IPC command to the mpv daemon.
 
-            # Check for termination sentinel
-            if filepath is None:
-                self.queue.task_done()
-                break
+        The file is deleted immediately after the command is accepted by mpv;
+        mpv already holds an open file descriptor at that point, so deletion
+        is safe and does not interrupt playback on Linux.
 
-            try:
-                self._process_file(filepath)
-            except Exception as e:
-                logger.exception(f"Unhandled exception while processing file '{filepath}': {e}")
-            finally:
-                self.queue.task_done()
-
-    def _process_file(self, filepath: Path):
-        """Plays the audio file and ensures its deletion afterwards."""
+        If the IPC socket is unavailable, the daemon is restarted and the
+        operation is retried once before giving up.
+        """
         if not filepath.exists():
             logger.warning(f"File not found: {filepath}. Skipping playback.")
             return
 
-        logger.info(f"Starting playback: {filepath.name}")
-        
-        # 1. Play the audio using mpv
+        logger.info(f"Requesting playback: {filepath.name}")
+
+        success = self._send_loadfile(filepath)
+
+        if not success:
+            # Socket was unavailable — daemon has been restarted inside
+            # _send_loadfile; retry the command once.
+            logger.info(f"Retrying playback after daemon restart: {filepath.name}")
+            success = self._send_loadfile(filepath, retry=True)
+
+        # Delete the file regardless of whether playback succeeded, to avoid
+        # leaving stale files in the watched directory.
+        self._delete_file(filepath)
+
+        if success:
+            logger.info(f"Playback command accepted for: {filepath.name}")
+
+    # ------------------------------------------------------------------
+    # IPC
+    # ------------------------------------------------------------------
+
+    def _send_loadfile(self, filepath: Path, *, retry: bool = False) -> bool:
+        """
+        Sends the JSON loadfile command to the mpv IPC socket.
+
+        Returns True if the command was sent successfully, False otherwise.
+        On failure, attempts to restart the mpv daemon before returning.
+        """
+        command = json.dumps({"command": ["loadfile", str(filepath), "replace"]}) + "\n"
+
         try:
-            # --no-video disables any video window
-            # --quiet minimizes console output
-            cmd = [self.mpv_path, "--no-video", "--quiet", str(filepath)]
-            logger.debug(f"Running command: {' '.join(cmd)}")
-            
-            # Execute synchronously to avoid overlapping playback
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-            
-            if result.returncode == 0:
-                logger.info(f"Playback finished successfully: {filepath.name}")
-            else:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(_IPC_CONNECT_TIMEOUT)
+                sock.connect(self.socket_path)
+                sock.settimeout(_IPC_SEND_TIMEOUT)
+                sock.sendall(command.encode("utf-8"))
+            return True
+
+        except FileNotFoundError:
+            # The socket file does not exist at all.
+            logger.warning(
+                f"IPC socket not found at '{self.socket_path}'. "
+                "Attempting to restart mpv daemon..."
+            )
+            self._restart_daemon()
+            return False
+
+        except (ConnectionRefusedError, OSError) as exc:
+            if retry:
+                # Already retried once — log as error and give up.
                 logger.error(
-                    f"mpv exited with code {result.returncode} for '{filepath.name}'. "
-                    f"stderr: {result.stderr.strip()}"
+                    f"IPC connection failed on retry for '{filepath.name}': {exc}. "
+                    "Giving up on this file."
                 )
+                return False
+
+            logger.error(
+                f"IPC connection failed for '{filepath.name}': {exc}. "
+                "Restarting mpv daemon..."
+            )
+            self._restart_daemon()
+            return False
+
+    # ------------------------------------------------------------------
+    # Daemon lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_daemon_running(self):
+        """
+        Checks whether the mpv daemon is alive and responsive.
+        Starts a fresh daemon if the socket is missing or not responding.
+        """
+        if self._is_socket_responsive():
+            logger.debug("Existing mpv daemon is responsive. Reusing it.")
+            return
+
+        # Socket missing or stale — clean up and start fresh.
+        self._remove_stale_socket()
+        self._start_daemon()
+
+    def _is_socket_responsive(self) -> bool:
+        """Returns True if the IPC socket exists and accepts connections."""
+        if not Path(self.socket_path).exists():
+            return False
+
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(_IPC_CONNECT_TIMEOUT)
+                sock.connect(self.socket_path)
+            return True
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
+            return False
+
+    def _start_daemon(self):
+        """Launches the mpv process in daemon (idle) mode with IPC socket."""
+        cmd = [
+            self.mpv_path,
+            "--idle=yes",
+            "--no-video",
+            "--quiet",
+            f"--input-ipc-server={self.socket_path}",
+        ]
+        logger.info(f"Starting mpv daemon: {' '.join(cmd)}")
+
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Give mpv a moment to create the socket before we try to use it.
+            self._wait_for_socket()
+            logger.info(f"mpv daemon started (PID {self._process.pid}).")
         except FileNotFoundError:
             logger.critical(
-                f"Failed to execute '{self.mpv_path}'. "
-                "Please verify that mpv is installed and added to the PATH."
+                f"Failed to start '{self.mpv_path}'. "
+                "Please verify that mpv is installed and available in PATH."
             )
-        except Exception as e:
-            logger.error(f"Error executing playback for '{filepath.name}': {e}")
+            raise
 
-        # 2. Delete the file from disk (even if playback failed)
+    def _restart_daemon(self):
+        """Terminates the current daemon (if any) and starts a new one."""
+        logger.info("Restarting mpv daemon...")
+        self._terminate_daemon()
+        self._start_daemon()
+
+    def _terminate_daemon(self):
+        """Sends SIGTERM to the mpv process and waits for it to exit."""
+        if self._process is not None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5.0)
+                logger.info("mpv daemon process terminated.")
+            except subprocess.TimeoutExpired:
+                logger.warning("mpv daemon did not stop in time; sending SIGKILL.")
+                self._process.kill()
+                self._process.wait()
+            except Exception as exc:
+                logger.error(f"Error while terminating mpv daemon: {exc}")
+            finally:
+                self._process = None
+
+        self._remove_stale_socket()
+
+    def _remove_stale_socket(self):
+        """Removes the socket file if it exists, to allow a clean restart."""
+        try:
+            os.remove(self.socket_path)
+            logger.debug(f"Removed stale socket: {self.socket_path}")
+        except FileNotFoundError:
+            pass  # Nothing to remove — that's fine.
+        except OSError as exc:
+            logger.warning(f"Could not remove socket '{self.socket_path}': {exc}")
+
+    def _wait_for_socket(self, timeout: float = 5.0, interval: float = 0.1):
+        """Blocks until the IPC socket becomes responsive or the timeout expires."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._is_socket_responsive():
+                return
+            time.sleep(interval)
+
+        logger.warning(
+            f"mpv daemon socket did not become responsive within {timeout}s."
+        )
+
+    # ------------------------------------------------------------------
+    # File management
+    # ------------------------------------------------------------------
+
+    def _delete_file(self, filepath: Path):
+        """Removes the audio file from disk after the IPC command has been sent."""
         try:
             filepath.unlink(missing_ok=True)
             logger.info(f"Deleted file from disk: {filepath.name}")
-        except Exception as e:
-            logger.error(f"Failed to delete file '{filepath}': {e}")
+        except Exception as exc:
+            logger.error(f"Failed to delete file '{filepath}': {exc}")

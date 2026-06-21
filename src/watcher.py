@@ -1,5 +1,4 @@
 import time
-import queue
 import logging
 from pathlib import Path
 from watchdog.events import FileSystemEventHandler
@@ -9,11 +8,11 @@ logger = logging.getLogger(__name__)
 class AudioFolderHandler(FileSystemEventHandler):
     """
     Reactive filesystem event handler that monitors file creation and rename/move events.
-    Filters for '.wav' files and verifies file stability before queuing them.
+    Filters for '.wav' files and verifies file stability before triggering playback.
     """
-    def __init__(self, audio_queue: queue.Queue, stability_timeout: float = 5.0):
+    def __init__(self, player, stability_timeout: float = 5.0):
         super().__init__()
-        self.queue = audio_queue
+        self.player = player
         self.stability_timeout = stability_timeout
 
     def on_created(self, event):
@@ -35,7 +34,7 @@ class AudioFolderHandler(FileSystemEventHandler):
         self._process_detected_file(filepath)
 
     def _process_detected_file(self, filepath: Path):
-        """Filters, stabilizes, and enqueues the detected file path."""
+        """Filters, stabilizes, and triggers playback of the detected file path."""
         # 1. Filter by .wav extension (case-insensitive)
         if filepath.suffix.lower() != ".wav":
             logger.debug(f"Ignoring non-WAV file: {filepath.name}")
@@ -45,8 +44,8 @@ class AudioFolderHandler(FileSystemEventHandler):
 
         # 2. Wait for the file to be fully written and closed by the writer
         if self._wait_for_file_ready(filepath):
-            logger.info(f"File stable and ready. Adding to playback queue: {filepath.name}")
-            self.queue.put(filepath)
+            logger.info(f"File stable and ready. Sending to player: {filepath.name}")
+            self.player.play(filepath)
         else:
             logger.warning(
                 f"File '{filepath.name}' did not stabilize or become readable "

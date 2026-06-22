@@ -52,9 +52,22 @@ class Config:
         # 3. MPV executable path
         self.mpv_path = os.getenv("MPV_PATH", "mpv")
 
+        # 4. MPV IPC socket path
+        # Best practice for systemd --user services: use XDG_RUNTIME_DIR
+        # (/run/user/<uid>) which is guaranteed to be accessible to all child
+        # processes of the service. Fallback to /tmp for non-systemd environments.
+        xdg_runtime = os.getenv("XDG_RUNTIME_DIR", "")
+        default_socket = (
+            str(Path(xdg_runtime) / "speaker-watchdog.sock")
+            if xdg_runtime
+            else "/tmp/speaker-watchdog.sock"
+        )
+        self.mpv_socket_path = os.getenv("MPV_SOCKET_PATH", default_socket)
+
     def __repr__(self):
         return (
             f"Config(watch_dir={self.watch_dir}, "
             f"log_level={logging.getLevelName(self.log_level)}, "
-            f"mpv_path='{self.mpv_path}')"
+            f"mpv_path='{self.mpv_path}', "
+            f"mpv_socket_path='{self.mpv_socket_path}')"
         )

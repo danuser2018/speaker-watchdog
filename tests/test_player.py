@@ -1,291 +1,162 @@
-import json
-import socket
 import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
-from src.player import MpvDaemonPlayer
+from src.player import MpvPlayer
 
 
-class TestMpvDaemonPlayerPlay(unittest.TestCase):
+class TestMpvPlayerPlay(unittest.TestCase):
     """Tests for the play() public method."""
 
     def setUp(self):
-        self.player = MpvDaemonPlayer(mpv_path="mpv", socket_path="/tmp/test-watchdog.sock")
+        self.player = MpvPlayer(mpv_path="mpv")
 
-    @patch("src.player.MpvDaemonPlayer._delete_file")
-    @patch("src.player.MpvDaemonPlayer._send_loadfile")
+    @patch("src.player.MpvPlayer._delete_file")
+    @patch("src.player.MpvPlayer._start_playback")
+    @patch("src.player.MpvPlayer._terminate_current")
     @patch("src.player.Path.exists")
-    def test_play_sends_ipc_command_and_deletes_file(
-        self, mock_exists, mock_send, mock_delete
+    def test_play_stops_current_starts_new_and_deletes_file(
+        self, mock_exists, mock_terminate, mock_start, mock_delete
     ):
-        """Tests that play() sends IPC command and deletes the file on success."""
+        """Tests that play() terminates current, starts new playback, and deletes the file."""
         mock_exists.return_value = True
-        mock_send.return_value = True
         test_file = Path("/watched/folder/alert.wav")
 
         self.player.play(test_file)
 
-        mock_send.assert_called_once_with(test_file)
+        mock_terminate.assert_called_once()
+        mock_start.assert_called_once_with(test_file)
         mock_delete.assert_called_once_with(test_file)
 
-    @patch("src.player.MpvDaemonPlayer._delete_file")
-    @patch("src.player.MpvDaemonPlayer._send_loadfile")
+    @patch("src.player.MpvPlayer._delete_file")
+    @patch("src.player.MpvPlayer._start_playback")
     @patch("src.player.Path.exists")
     def test_play_file_not_exists_skips_everything(
-        self, mock_exists, mock_send, mock_delete
+        self, mock_exists, mock_start, mock_delete
     ):
-        """Tests that play() skips IPC and deletion when the file does not exist."""
+        """Tests that play() does nothing when the file does not exist."""
         mock_exists.return_value = False
         test_file = Path("/watched/folder/missing.wav")
 
         self.player.play(test_file)
 
-        mock_send.assert_not_called()
+        mock_start.assert_not_called()
         mock_delete.assert_not_called()
 
-    @patch("src.player.MpvDaemonPlayer._delete_file")
-    @patch("src.player.MpvDaemonPlayer._send_loadfile")
-    @patch("src.player.Path.exists")
-    def test_play_retries_after_failed_send(
-        self, mock_exists, mock_send, mock_delete
-    ):
-        """
-        Tests that play() retries _send_loadfile with retry=True when the first
-        attempt fails (e.g., socket was temporarily unavailable).
-        """
-        mock_exists.return_value = True
-        # First call fails, second call (retry) succeeds
-        mock_send.side_effect = [False, True]
-        test_file = Path("/watched/folder/alert.wav")
-
-        self.player.play(test_file)
-
-        self.assertEqual(mock_send.call_count, 2)
-        mock_send.assert_any_call(test_file)
-        mock_send.assert_any_call(test_file, retry=True)
-        # File must still be deleted even after a retry
-        mock_delete.assert_called_once_with(test_file)
-
-    @patch("src.player.MpvDaemonPlayer._delete_file")
-    @patch("src.player.MpvDaemonPlayer._send_loadfile")
-    @patch("src.player.Path.exists")
-    def test_play_deletes_file_even_when_ipc_fails(
-        self, mock_exists, mock_send, mock_delete
-    ):
-        """
-        Tests that the file is always deleted even if both IPC attempts fail,
-        to avoid leaving stale files in the watched directory.
-        """
-        mock_exists.return_value = True
-        mock_send.return_value = False
-        test_file = Path("/watched/folder/alert.wav")
-
-        self.player.play(test_file)
-
-        mock_delete.assert_called_once_with(test_file)
-
-
-class TestMpvDaemonPlayerSendLoadfile(unittest.TestCase):
-    """Tests for the _send_loadfile() internal method."""
-
-    def setUp(self):
-        self.player = MpvDaemonPlayer(mpv_path="mpv", socket_path="/tmp/test-watchdog.sock")
-
-    @patch("src.player.socket.socket")
-    def test_send_loadfile_sends_correct_json(self, mock_socket_cls):
-        """Tests that _send_loadfile sends the correct JSON command over the socket."""
-        mock_sock = MagicMock()
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        test_file = Path("/watched/folder/alert.wav")
-
-        result = self.player._send_loadfile(test_file)
-
-        self.assertTrue(result)
-        expected_payload = (
-            json.dumps({"command": ["loadfile", str(test_file), "replace"]}) + "\n"
-        ).encode("utf-8")
-        mock_sock.sendall.assert_called_once_with(expected_payload)
-
-    @patch("src.player.MpvDaemonPlayer._restart_daemon")
-    @patch("src.player.socket.socket")
-    def test_send_loadfile_socket_missing_triggers_restart(
-        self, mock_socket_cls, mock_restart
-    ):
-        """Tests that a missing socket file triggers a daemon restart."""
-        mock_sock = MagicMock()
-        mock_sock.connect.side_effect = FileNotFoundError("No such file")
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        test_file = Path("/watched/folder/alert.wav")
-
-        result = self.player._send_loadfile(test_file)
-
-        self.assertFalse(result)
-        mock_restart.assert_called_once()
-
-    @patch("src.player.MpvDaemonPlayer._restart_daemon")
-    @patch("src.player.socket.socket")
-    def test_send_loadfile_connection_refused_triggers_restart(
-        self, mock_socket_cls, mock_restart
-    ):
-        """Tests that a refused connection triggers a daemon restart."""
-        mock_sock = MagicMock()
-        mock_sock.connect.side_effect = ConnectionRefusedError("Connection refused")
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        test_file = Path("/watched/folder/alert.wav")
-
-        result = self.player._send_loadfile(test_file)
-
-        self.assertFalse(result)
-        mock_restart.assert_called_once()
-
-    @patch("src.player.MpvDaemonPlayer._restart_daemon")
-    @patch("src.player.socket.socket")
-    def test_send_loadfile_socket_missing_on_retry_does_not_restart(
-        self, mock_socket_cls, mock_restart
-    ):
-        """
-        Tests that a missing socket on a retry attempt gives up without restarting
-        the daemon again, avoiding an infinite restart loop.
-        """
-        mock_sock = MagicMock()
-        mock_sock.connect.side_effect = FileNotFoundError("No such file")
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        test_file = Path("/watched/folder/alert.wav")
-
-        result = self.player._send_loadfile(test_file, retry=True)
-
-        self.assertFalse(result)
-        mock_restart.assert_not_called()
-
-    @patch("src.player.MpvDaemonPlayer._restart_daemon")
-    @patch("src.player.socket.socket")
-    def test_send_loadfile_retry_does_not_restart_again(
-        self, mock_socket_cls, mock_restart
-    ):
-        """
-        Tests that on a retry attempt that also fails with a connection error,
-        the daemon is NOT restarted again (giving up gracefully).
-        """
-        mock_sock = MagicMock()
-        mock_sock.connect.side_effect = ConnectionRefusedError("Connection refused")
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        test_file = Path("/watched/folder/alert.wav")
-
-        result = self.player._send_loadfile(test_file, retry=True)
-
-        self.assertFalse(result)
-        mock_restart.assert_not_called()
-
-
-class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
-    """Tests for daemon start/stop lifecycle."""
-
-    def setUp(self):
-        self.player = MpvDaemonPlayer(mpv_path="mpv", socket_path="/tmp/test-watchdog.sock")
-
-    @patch("src.player.MpvDaemonPlayer._ensure_daemon_running")
-    def test_start_calls_ensure_daemon_running(self, mock_ensure):
-        """Tests that start() delegates to _ensure_daemon_running."""
-        self.player.start()
-        mock_ensure.assert_called_once()
-
-    @patch("src.player.MpvDaemonPlayer._terminate_daemon")
-    def test_stop_calls_terminate_daemon(self, mock_terminate):
-        """Tests that stop() delegates to _terminate_daemon."""
-        self.player.stop()
-        mock_terminate.assert_called_once()
-
-    @patch("src.player.MpvDaemonPlayer._start_daemon")
-    @patch("src.player.MpvDaemonPlayer._is_socket_responsive")
-    def test_ensure_daemon_starts_if_socket_not_responsive(
-        self, mock_responsive, mock_start
-    ):
-        """Tests that _ensure_daemon_running starts a new daemon if socket is unresponsive."""
-        mock_responsive.return_value = False
-
-        self.player._ensure_daemon_running()
-
-        mock_start.assert_called_once()
-
-    @patch("src.player.MpvDaemonPlayer._start_daemon")
-    @patch("src.player.MpvDaemonPlayer._is_socket_responsive")
-    def test_ensure_daemon_reuses_existing_if_responsive(
-        self, mock_responsive, mock_start
-    ):
-        """Tests that _ensure_daemon_running reuses an existing responsive daemon."""
-        mock_responsive.return_value = True
-
-        self.player._ensure_daemon_running()
-
-        mock_start.assert_not_called()
-
-    @patch("src.player.MpvDaemonPlayer._wait_for_socket")
     @patch("src.player.subprocess.Popen")
-    def test_start_daemon_launches_correct_command(self, mock_popen, mock_wait):
-        """Tests that _start_daemon launches mpv with the expected arguments."""
+    @patch("src.player.Path.exists")
+    def test_play_deletes_file_even_when_mpv_not_found(self, mock_exists, mock_popen):
+        """Tests that the file is deleted even if mpv is not installed."""
+        mock_exists.return_value = True
+        mock_popen.side_effect = FileNotFoundError("mpv not found")
+        test_file = Path("/watched/folder/alert.wav")
+
+        with patch.object(self.player, "_delete_file") as mock_delete:
+            self.player.play(test_file)
+            mock_delete.assert_called_once_with(test_file)
+
+
+class TestMpvPlayerStartPlayback(unittest.TestCase):
+    """Tests for the _start_playback() internal method."""
+
+    def setUp(self):
+        self.player = MpvPlayer(mpv_path="mpv")
+
+    @patch("src.player.subprocess.Popen")
+    def test_start_playback_spawns_correct_command(self, mock_popen):
+        """Tests that _start_playback launches mpv with the expected arguments."""
         mock_process = MagicMock()
         mock_process.pid = 42
-        mock_process.poll.return_value = None  # process is still alive
-        # Provide an iterable stderr so the logging thread terminates cleanly.
-        mock_process.stderr.readline.return_value = b""
         mock_popen.return_value = mock_process
+        test_file = Path("/watched/folder/alert.wav")
 
-        self.player._start_daemon()
+        self.player._start_playback(test_file)
 
         mock_popen.assert_called_once_with(
-            [
-                "mpv",
-                "--idle=yes",
-                "--no-video",
-                "--quiet",
-                f"--input-ipc-server={self.player.socket_path}",
-            ],
+            ["mpv", "--no-video", "--quiet", str(test_file)],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
+        self.assertEqual(self.player._current, mock_process)
 
-    @patch("src.player.MpvDaemonPlayer._wait_for_socket")
     @patch("src.player.subprocess.Popen")
-    def test_start_daemon_raises_if_process_exits_early(self, mock_popen, mock_wait):
-        """Tests that _start_daemon raises RuntimeError if mpv exits before the socket is ready."""
+    def test_start_playback_mpv_not_found_sets_current_to_none(self, mock_popen):
+        """Tests that _current is None when mpv executable is not found."""
+        mock_popen.side_effect = FileNotFoundError("mpv not found")
+        test_file = Path("/watched/folder/alert.wav")
+
+        self.player._start_playback(test_file)
+
+        self.assertIsNone(self.player._current)
+
+
+class TestMpvPlayerTerminateCurrent(unittest.TestCase):
+    """Tests for the _terminate_current() internal method."""
+
+    def setUp(self):
+        self.player = MpvPlayer(mpv_path="mpv")
+
+    def test_terminate_current_no_process_is_noop(self):
+        """Tests that _terminate_current does nothing when no process is running."""
+        self.player._current = None
+        self.player._terminate_current()  # Must not raise
+
+    def test_terminate_current_already_finished_clears_reference(self):
+        """Tests that a naturally finished process just clears the reference."""
         mock_process = MagicMock()
-        mock_process.pid = 42
-        mock_process.returncode = 1
-        mock_process.poll.return_value = 1  # process already dead
-        mock_process.stderr.readline.return_value = b""
-        mock_popen.return_value = mock_process
+        mock_process.poll.return_value = 0  # already exited
+        self.player._current = mock_process
 
-        with self.assertRaises(RuntimeError):
-            self.player._start_daemon()
+        self.player._terminate_current()
 
-        self.assertIsNone(self.player._process)
+        mock_process.terminate.assert_not_called()
+        self.assertIsNone(self.player._current)
 
-    def test_terminate_daemon_sends_sigterm(self):
-        """Tests that _terminate_daemon calls terminate() and wait() on the process."""
+    def test_terminate_current_sends_sigterm(self):
+        """Tests that a running process receives SIGTERM."""
         mock_process = MagicMock()
-        self.player._process = mock_process
+        mock_process.poll.return_value = None  # still running
+        self.player._current = mock_process
 
-        with patch("src.player.MpvDaemonPlayer._remove_stale_socket"):
-            self.player._terminate_daemon()
+        self.player._terminate_current()
 
         mock_process.terminate.assert_called_once()
         mock_process.wait.assert_called_once()
-        self.assertIsNone(self.player._process)
+        self.assertIsNone(self.player._current)
 
-    def test_terminate_daemon_kills_on_timeout(self):
-        """Tests that _terminate_daemon sends SIGKILL if terminate() times out."""
+    def test_terminate_current_sends_sigkill_on_timeout(self):
+        """Tests that SIGKILL is sent if terminate() times out."""
         mock_process = MagicMock()
-        # First call to wait(timeout=5.0) raises TimeoutExpired; second call after kill() returns normally.
-        mock_process.wait.side_effect = [subprocess.TimeoutExpired(cmd="mpv", timeout=5), None]
-        self.player._process = mock_process
+        mock_process.poll.return_value = None
+        mock_process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="mpv", timeout=2),
+            None,
+        ]
+        self.player._current = mock_process
 
-        with patch("src.player.MpvDaemonPlayer._remove_stale_socket"):
-            self.player._terminate_daemon()
+        self.player._terminate_current()
 
         mock_process.kill.assert_called_once()
-        self.assertIsNone(self.player._process)
+        self.assertIsNone(self.player._current)
+
+
+class TestMpvPlayerLifecycle(unittest.TestCase):
+    """Tests for start() and stop() lifecycle methods."""
+
+    def setUp(self):
+        self.player = MpvPlayer(mpv_path="mpv")
+
+    def test_start_is_noop(self):
+        """Tests that start() completes without errors and sets no state."""
+        self.player.start()
+        self.assertIsNone(self.player._current)
+
+    @patch("src.player.MpvPlayer._terminate_current")
+    def test_stop_terminates_current(self, mock_terminate):
+        """Tests that stop() calls _terminate_current."""
+        self.player.stop()
+        mock_terminate.assert_called_once()
 
 
 if __name__ == "__main__":

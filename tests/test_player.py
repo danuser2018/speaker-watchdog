@@ -228,6 +228,8 @@ class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
         mock_process = MagicMock()
         mock_process.pid = 42
         mock_process.poll.return_value = None  # process is still alive
+        # Provide an iterable stderr so the logging thread terminates cleanly.
+        mock_process.stderr.readline.return_value = b""
         mock_popen.return_value = mock_process
 
         self.player._start_daemon()
@@ -241,6 +243,7 @@ class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
                 f"--input-ipc-server={self.player.socket_path}",
             ],
             stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
 
     @patch("src.player.MpvDaemonPlayer._wait_for_socket")
@@ -251,6 +254,7 @@ class TestMpvDaemonPlayerLifecycle(unittest.TestCase):
         mock_process.pid = 42
         mock_process.returncode = 1
         mock_process.poll.return_value = 1  # process already dead
+        mock_process.stderr.readline.return_value = b""
         mock_popen.return_value = mock_process
 
         with self.assertRaises(RuntimeError):

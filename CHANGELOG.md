@@ -26,6 +26,7 @@ Los cambios se agrupan en las siguientes categorías:
 - `src/config.py`: nuevo parámetro `mpv_socket_path`. Por defecto usa `$XDG_RUNTIME_DIR/speaker-watchdog.sock` (recomendado en servicios systemd `--user`) con fallback a `/tmp/speaker-watchdog.sock`. Sobreescribible mediante la variable de entorno `MPV_SOCKET_PATH`.
 - `.env.example`: documentada la variable `MPV_SOCKET_PATH`.
 - `src/player.py` (`_start_daemon`): mensaje de error explícito cuando mpv está vivo pero no ha creado el socket, con indicación de las causas más probables (namespace, versión de mpv, permisos).
+- `src/player.py` (`_log_mpv_stderr`): nuevo método que captura el stderr de mpv con `subprocess.PIPE` y lo reenvía línea a línea al logger del servicio en un hilo daemon (`MpvStderrLogger`). Esto garantiza que cualquier error de mpv aparezca en journald con el prefijo `[mpv]`, independientemente de cómo systemd gestione la herencia de descriptores de fichero.
 
 ### Cambiado
 

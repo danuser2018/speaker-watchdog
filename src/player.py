@@ -3,6 +3,7 @@ import logging
 import os
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -165,6 +166,23 @@ class MpvDaemonPlayer:
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             return False
 
+    def _log_mpv_stderr(self, process: subprocess.Popen):
+        """
+        Reads mpv stderr line-by-line and forwards every line to the service
+        logger. Runs in a daemon thread so it never blocks shutdown.
+
+        Using subprocess.PIPE + an explicit reader thread is the only reliable
+        way to capture child stderr in a systemd service: fd inheritance can be
+        silently redirected by systemd depending on StandardError= settings.
+        """
+        try:
+            for raw_line in iter(process.stderr.readline, b""):
+                line = raw_line.decode("utf-8", errors="replace").rstrip()
+                if line:
+                    logger.debug(f"[mpv] {line}")
+        except Exception:
+            pass  # Pipe closed when mpv exits — normal termination.
+
     def _start_daemon(self):
         """Launches the mpv process in daemon (idle) mode with IPC socket."""
         cmd = [
@@ -180,9 +198,15 @@ class MpvDaemonPlayer:
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                # stderr intentionally not suppressed: mpv errors flow to journald
-                # alongside the service logs, making failures diagnosable.
+                stderr=subprocess.PIPE,  # Read by _log_mpv_stderr thread below
             )
+            # Forward mpv stderr to our logger so it always appears in journald.
+            threading.Thread(
+                target=self._log_mpv_stderr,
+                args=(self._process,),
+                daemon=True,
+                name="MpvStderrLogger",
+            ).start()
             # Give mpv a moment to create the socket before we try to use it.
             self._wait_for_socket()
 

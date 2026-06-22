@@ -23,7 +23,11 @@ Los cambios se agrupan en las siguientes categorías:
 
 ### Añadido
 
-- `tests/test_player.py`: nueva suite completa para `MpvPlayer` (13 casos de prueba).
+- `tests/test_player.py`: nueva suite completa para `MpvPlayer` (14 casos de prueba).
+
+### Corregido
+
+- `src/player.py`: condición de carrera en el borrado de archivos. `Popen` retorna antes de que el proceso hijo abra el archivo; si se hacía `unlink()` en ese instante, mpv no encontraba el fichero y salía silenciosamente sin reproducir nada. El borrado se difiere ahora a un hilo daemon (`MpvWaiter`) que espera `process.wait()` antes de llamar a `unlink()`.
 
 ### Cambiado
 

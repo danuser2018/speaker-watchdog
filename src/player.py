@@ -197,6 +197,19 @@ class MpvDaemonPlayer:
                     f"mpv daemon failed to start (exit code {returncode})."
                 )
 
+            if not Path(self.socket_path).exists():
+                # Process is alive but never created the socket. Likely causes:
+                # 1. The socket path is not accessible from the mpv subprocess
+                #    (e.g. namespace/PrivateTmp isolation in systemd).
+                # 2. The mpv version does not support --input-ipc-server.
+                # 3. The socket directory does not have write permissions.
+                logger.error(
+                    f"mpv (PID {self._process.pid}) is running but did not create "
+                    f"the IPC socket at '{self.socket_path}'. "
+                    "Check that the socket path is writable and that mpv supports "
+                    "--input-ipc-server. Override with MPV_SOCKET_PATH env var if needed."
+                )
+
             logger.info(f"mpv daemon started (PID {self._process.pid}).")
         except FileNotFoundError:
             logger.critical(

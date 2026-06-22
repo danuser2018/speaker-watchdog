@@ -42,7 +42,7 @@ def main():
     logger.info(f"Loaded Configuration: {config}")
 
     # 3. Initialize and Start the mpv Daemon Player
-    player = MpvDaemonPlayer(mpv_path=config.mpv_path)
+    player = MpvDaemonPlayer(mpv_path=config.mpv_path, socket_path=config.mpv_socket_path)
     try:
         player.start()
     except Exception as e:

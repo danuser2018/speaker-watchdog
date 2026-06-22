@@ -23,15 +23,19 @@ Los cambios se agrupan en las siguientes categorías:
 
 ### Añadido
 
-- `src/config.py`: nuevo parámetro `mpv_socket_path`. Por defecto usa `$XDG_RUNTIME_DIR/speaker-watchdog.sock` (recomendado en servicios systemd `--user`) con fallback a `/tmp/speaker-watchdog.sock`. Sobreescribible mediante la variable de entorno `MPV_SOCKET_PATH`.
-- `.env.example`: documentada la variable `MPV_SOCKET_PATH`.
-- `src/player.py` (`_start_daemon`): mensaje de error explícito cuando mpv está vivo pero no ha creado el socket, con indicación de las causas más probables (namespace, versión de mpv, permisos).
-- `src/player.py` (`_log_mpv_stderr`): nuevo método que captura el stderr de mpv con `subprocess.PIPE` y lo reenvía línea a línea al logger del servicio en un hilo daemon (`MpvStderrLogger`). Esto garantiza que cualquier error de mpv aparezca en journald con el prefijo `[mpv]`, independientemente de cómo systemd gestione la herencia de descriptores de fichero.
+- `tests/test_player.py`: nueva suite completa para `MpvPlayer` (13 casos de prueba).
 
 ### Cambiado
 
-- `src/main.py`: `MpvDaemonPlayer` recibe ahora `socket_path=config.mpv_socket_path` en lugar de depender del valor por defecto hardcoded `/tmp/speaker-watchdog.sock`.
-- `src/config.py` (`__repr__`): incluye `mpv_socket_path` en la representación de configuración para trazabilidad en el log de arranque.
+- `src/player.py`: segunda refactorización. Se abandona la arquitectura basada en mpv daemon + IPC socket (causa raíz: AppArmor bloquea `bind()` de sockets Unix en mpv). Se introduce `MpvPlayer`: arquitectura proceso-por-reproducción con semántica *last sound wins* — cuando llega un nuevo archivo se termina el proceso mpv en curso (SIGTERM/SIGKILL) y se lanza uno nuevo. No requiere IPC, sockets ni FIFOs.
+- `src/main.py`: actualizado para importar y usar `MpvPlayer` en lugar de `MpvDaemonPlayer`.
+- `src/config.py`: eliminado el campo `mpv_socket_path` (ya no es necesario sin IPC).
+- `.env.example`: eliminada la variable `MPV_SOCKET_PATH`.
+
+### Eliminado
+
+- Clase `MpvDaemonPlayer` y toda su infraestructura asociada: socket IPC, proceso daemon persistente, hilo `MpvStderrLogger`, lógica de reintento y reinicio del daemon.
+- Variable de entorno `MPV_SOCKET_PATH`.
 
 ---
 

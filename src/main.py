@@ -14,7 +14,7 @@ from watchdog.observers import Observer
 
 # Import local modules
 from config import Config
-from player import MpvDaemonPlayer
+from player import MpvPlayer
 from watcher import AudioFolderHandler
 
 def main():
@@ -41,8 +41,8 @@ def main():
     logger.info("Initializing speaker-watchdog service...")
     logger.info(f"Loaded Configuration: {config}")
 
-    # 3. Initialize and Start the mpv Daemon Player
-    player = MpvDaemonPlayer(mpv_path=config.mpv_path, socket_path=config.mpv_socket_path)
+    # 3. Initialize and Start the mpv Player
+    player = MpvPlayer(mpv_path=config.mpv_path)
     try:
         player.start()
     except Exception as e:

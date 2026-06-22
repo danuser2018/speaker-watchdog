@@ -11,9 +11,8 @@ class MpvPlayer:
     Plays audio files using mpv with "last sound wins" semantics.
 
     Each call to play() immediately stops any ongoing playback and starts the
-    new file. No IPC socket, no FIFO, no daemon process required.
-
-    A lock serializes concurrent calls from the filesystem watcher thread.
+    new file. The audio file is deleted only after mpv exits, avoiding the race
+    condition where the file is unlinked before mpv has opened it.
     """
 
     def __init__(self, mpv_path: str = "mpv"):
@@ -40,8 +39,10 @@ class MpvPlayer:
         """
         Plays the given audio file, stopping any currently playing audio first.
 
-        The file is deleted immediately after mpv opens it. On Linux an open
-        file descriptor survives unlink, so playback continues uninterrupted.
+        File deletion is deferred to a background thread that waits for mpv to
+        exit. This avoids the race condition where the file is unlinked before
+        mpv has had time to open it (Popen returns before the child process
+        executes its first instruction).
         """
         if not filepath.exists():
             logger.warning(f"File not found: {filepath}. Skipping playback.")
@@ -51,43 +52,63 @@ class MpvPlayer:
 
         with self._lock:
             self._terminate_current()
-            self._start_playback(filepath)
+            process = self._start_playback(filepath)
+            self._current = process
 
-        # Delete outside the lock: file is already open by mpv.
-        self._delete_file(filepath)
+        if process is not None:
+            threading.Thread(
+                target=self._wait_and_delete,
+                args=(process, filepath),
+                daemon=True,
+                name=f"MpvWaiter-{filepath.name}",
+            ).start()
 
     # ------------------------------------------------------------------
     # Internal playback management
     # ------------------------------------------------------------------
 
-    def _start_playback(self, filepath: Path):
-        """Launches a new mpv process for the given file. Must hold _lock."""
+    def _start_playback(self, filepath: Path) -> "subprocess.Popen | None":
+        """Launches a new mpv process. Must hold _lock."""
         cmd = [self.mpv_path, "--no-video", "--quiet", str(filepath)]
         logger.debug(f"Spawning: {' '.join(cmd)}")
-
         try:
-            self._current = subprocess.Popen(
+            process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            logger.info(f"Playback started (PID {self._current.pid}): {filepath.name}")
+            logger.info(f"Playback started (PID {process.pid}): {filepath.name}")
+            return process
         except FileNotFoundError:
             logger.critical(
                 f"Failed to execute '{self.mpv_path}'. "
                 "Please verify that mpv is installed and available in PATH."
             )
-            self._current = None
+            return None
+
+    def _wait_and_delete(self, process: subprocess.Popen, filepath: Path):
+        """
+        Waits for mpv to exit, then deletes the audio file.
+
+        Deferring deletion here (rather than immediately after Popen) ensures
+        that mpv has already opened the file before we unlink it. On Linux an
+        open file descriptor survives unlink, so if we delete while mpv is
+        playing, playback continues uninterrupted. But if we delete before mpv
+        opens the file, mpv finds nothing and exits silently.
+        """
+        try:
+            process.wait()
+        except Exception:
+            pass
+        self._delete_file(filepath)
 
     def _terminate_current(self):
         """Stops the current mpv process if one is running. Must hold _lock."""
         if self._current is None:
             return
-
         if self._current.poll() is not None:
             self._current = None
             return
-
         logger.info(f"Stopping current playback (PID {self._current.pid}).")
         try:
             self._current.terminate()
@@ -104,7 +125,7 @@ class MpvPlayer:
     # ------------------------------------------------------------------
 
     def _delete_file(self, filepath: Path):
-        """Removes the audio file from disk after mpv has opened it."""
+        """Removes the audio file from disk after mpv has exited."""
         try:
             filepath.unlink(missing_ok=True)
             logger.info(f"Deleted file from disk: {filepath.name}")

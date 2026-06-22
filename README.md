@@ -26,7 +26,7 @@ En entornos de automatización local, notificaciones del sistema o laboratorios 
 `speaker-watchdog` actúa como un **demonio pasivo (daemon)** de audio:
 *   **Vigila silenciosamente** una carpeta configurada.
 *   **Reacciona instantáneamente** ante la llegada de nuevos archivos `.wav`.
-*   **Evita solapamientos sonoros** reproduciendo las alertas de forma ordenada y secuencial.
+*   **Aplica la política "el último sonido gana":** si llega un nuevo aviso mientras otro está en reproducción, el anterior se interrumpe y el nuevo comienza de inmediato.
 *   **Mantiene el disco limpio** eliminando el archivo procesado automáticamente tras su reproducción.
 
 ---
@@ -37,33 +37,31 @@ Para asegurar la máxima robustez y un consumo mínimo de recursos, se ha optado
 
 1.  **Monitoreo Reactivo (Event-Driven):** En lugar de realizar un sondeo constante de disco (polling con `os.listdir`), que consume CPU y provoca retrasos en la respuesta, utilizamos la librería `watchdog` de Python. Esta librería aprovecha la API nativa `inotify` del kernel de Linux, recibiendo eventos instantáneos enviados por el sistema de archivos cuando el archivo `.wav` se ha escrito por completo (`IN_CLOSE_WRITE`).
 2.  **Reproducción de Audio:** Delegamos la reproducción en `mpv`, una utilidad CLI altamente optimizada, ligera y estándar en sistemas Linux. Se ejecuta de manera aislada y silenciosa sin cargar interfaz gráfica (`mpv --no-video --quiet`).
-3.  **Cola de Reproducción Secuencial (Thread-safe Queue):** Si múltiples procesos depositan archivos `.wav` al mismo tiempo en la carpeta monitorizada, reproducirlos en paralelo daría como resultado un caos de audio ininteligible. Implementamos un patrón **Productor-Consumidor**:
-    *   El **Productor** (el watcher de `watchdog`) detecta el archivo y lo mete en una `queue.Queue`.
-    *   El **Consumidor** (un hilo de ejecución dedicado y en segundo plano) saca los archivos de la cola de uno en uno, los reproduce ordenadamente y los elimina tras finalizar cada pista.
+3.  **Política "el último sonido gana" (Last Sound Wins):** Los avisos sonoros representan el estado actual del sistema; el más reciente siempre es el más relevante. Cuando llega un nuevo archivo `.wav` mientras otro se está reproduciendo, el proceso `mpv` en curso recibe una señal de terminación (SIGTERM) y se lanza uno nuevo de inmediato. No existe cola de espera.
 4.  **Configuración mediante Entorno:** El directorio vigilado y otros parámetros del servicio se configuran de manera flexible mediante variables de entorno (como `WATCHDOG_DIR`), permitiendo su fácil parametrización sin alterar el código base.
 
 ---
 
 ## 🏗️ Arquitectura del Servicio
 
-La arquitectura del servicio se compone de tres módulos lógicos principales que operan de forma asíncrona y coordinada:
+La arquitectura del servicio se compone de dos módulos lógicos principales que operan de forma coordinada:
 
 ```mermaid
 graph TD
-    A[Directorio Vigilado] -- Evento inotify: Archivo WAV Creado --> B[Filesystem Watcher / Productor]
-    B -- Añadir ruta de archivo a la cola --> C(Cola de Audio / Queue)
-    C -- Obtener siguiente archivo --> D[Reproductor Secuencial / Consumidor]
-    D -- Subproceso mpv --> E[Salida de Altavoz del PC]
-    D -- Eliminación exitosa/fallida --> F[Eliminar Archivo del Disco]
-    
+    A[Directorio Vigilado] -- Evento inotify: Archivo WAV Creado --> B[Filesystem Watcher]
+    B -- player.play filepath --> C[MpvPlayer]
+    C -- SIGTERM proceso anterior si existe --> C
+    C -- subprocess.Popen mpv --> D[Proceso mpv]
+    D --> E[Salida de Altavoz del PC]
+    D -- process.wait en hilo MpvWaiter --> F[Eliminar Archivo del Disco]
+
     style C fill:#f9f,stroke:#333,stroke-width:2px
     style E fill:#bbf,stroke:#333,stroke-width:2px
 ```
 
 ### Componentes de Software:
-*   **`WatcherService` (Productor):** Escucha y filtra eventos del sistema de archivos. Ignora archivos temporales y procesa únicamente archivos con extensión `.wav`.
-*   **`AudioQueue` (Canal de Comunicación):** Una cola en memoria FIFO (*First-In, First-Out*) thread-safe que almacena las rutas de los archivos de audio pendientes de reproducir.
-*   **`AudioPlayerWorker` (Consumidor):** Hilo de fondo en bucle infinito bloqueante que espera nuevos elementos en la cola. Ejecuta la llamada externa a `mpv` y maneja la eliminación posterior del fichero garantizando tolerancia a fallos.
+*   **`AudioFolderHandler` (Watcher):** Escucha y filtra eventos del sistema de archivos. Ignora archivos temporales y procesa únicamente archivos con extensión `.wav`. Espera a que el archivo esté completamente escrito antes de enviarlo al reproductor.
+*   **`MpvPlayer` (Reproductor):** Gestiona el proceso `mpv` activo. Cada nueva reproducción termina la anterior (SIGTERM/SIGKILL) y lanza un proceso `mpv` nuevo. Un hilo daemon (`MpvWaiter`) espera a que `mpv` termine para borrar el archivo, garantizando que `mpv` siempre tenga tiempo de abrir el fichero antes de que sea eliminado.
 
 ---
 
@@ -205,10 +203,10 @@ speaker-watchdog/
 
 ## 🌟 Buenas Prácticas Implementadas
 
-*   **Tratamiento de Archivos Parciales:** En sistemas Linux, un archivo grande puede tardar unos milisegundos en escribirse del todo en disco. Para evitar que el reproductor intente reproducir un archivo incompleto y de error, el servicio espera a que se cierre el descriptor de escritura (`IN_CLOSE_WRITE`) antes de procesarlo.
-*   **Manejo de Errores Defensivo:** Si un archivo `.wav` está corrupto, no es de audio o `mpv` falla al reproducirlo, el servicio captura la excepción, registra el error detalladamente en el `journal` de systemd, y procede a **eliminar el archivo corrupto** para que no se quede atascado ni vuelva a procesarse repetidamente.
-*   **Estructura FIFO Limpia:** Las operaciones de lectura/escritura en disco no bloquean el flujo de detección de nuevos archivos. La detección ocurre en el hilo principal y la reproducción se realiza en un hilo consumidor separado, lo que garantiza que nunca se pierda un evento de inotify.
-*   **Trazabilidad y Observabilidad:** El servicio utiliza el framework nativo `logging` de Python mapeando de forma transparente los niveles `INFO`, `DEBUG` y `ERROR` al `sys.stdout` y `sys.stderr`, integrándose nativamente con los logs estructurados de `journald` de systemd.
+*   **Tratamiento de Archivos Parciales:** En sistemas Linux, un archivo grande puede tardar unos milisegundos en escribirse del todo en disco. Para evitar que el reproductor intente reproducir un archivo incompleto, el servicio espera a que se cierre el descriptor de escritura (`IN_CLOSE_WRITE`) antes de procesarlo.
+*   **Borrado Diferido y Seguro:** El archivo `.wav` se elimina en un hilo daemon (`MpvWaiter`) que espera a que `mpv` termine (`process.wait()`). Esto evita la condición de carrera donde el archivo sería borrado antes de que `mpv` tuviese tiempo de abrirlo, y garantiza que la reproducción no se interrumpa incluso si se borra el fichero durante la misma (en Linux, un descriptor de fichero abierto sobrevive al `unlink`).
+*   **Interrupción Limpia:** Si llega un nuevo aviso mientras otro está en reproducción, `MpvPlayer` envía SIGTERM al proceso `mpv` activo y espera su terminación (con SIGKILL de respaldo si no responde en 2 segundos) antes de lanzar el nuevo. Nunca se solapan dos reproducciones.
+*   **Trazabilidad y Observabilidad:** El servicio utiliza el framework nativo `logging` de Python mapeando de forma transparente los niveles `INFO`, `DEBUG` y `ERROR` al `sys.stdout`, integrándose nativamente con los logs estructurados de `journald` de systemd.
 
 ---
 

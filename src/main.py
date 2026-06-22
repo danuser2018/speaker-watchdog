@@ -46,7 +46,7 @@ def main():
     try:
         player.start()
     except Exception as e:
-        logger.critical(f"Failed to start mpv daemon player: {e}")
+        logger.critical(f"Failed to start mpv player: {e}")
         sys.exit(1)
 
     # 4. Initialize and Start Filesystem Watcher Observer
@@ -90,9 +90,9 @@ def main():
         observer.join()
         logger.info("Filesystem observer stopped.")
 
-        logger.info("Stopping mpv daemon player...")
+        logger.info("Stopping mpv player...")
         player.stop()
-        logger.info("mpv daemon player stopped.")
+        logger.info("mpv player stopped.")
 
         logger.info("Service shutdown procedure completed successfully. Exiting.")
 

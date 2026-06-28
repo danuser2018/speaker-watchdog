@@ -19,6 +19,12 @@ Los cambios se agrupan en las siguientes categorías:
 
 ---
 
+## Sin publicar
+
+### Añadido
+
+- Carpeta `.agent/skills` añadida con información relevante para la IA.
+
 ## [1.1.0] - 2026-06-22
 
 ### Añadido

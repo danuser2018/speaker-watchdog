@@ -1,5 +1,11 @@
 # Refactor: Sustitución de cola FIFO por reproducción mediante mpv daemon + IPC
 
+> [!WARNING]
+> **PROPUESTA RECHAZADA / DEPRECADA**
+> Esta propuesta de refactorización fue descartada tras comprobarse en entornos reales que el aislamiento de recursos y las políticas del sistema cortaban de manera automática los sockets Unix persistentes, dejando procesos huérfanos e inutilizables de `mpv`.
+>
+> De acuerdo con el [ADR-008: Modelo de Reproducción de Audio Física en speaker-watchdog](file:///home/danuser2018/workspace/home-assistant/docs/adr/adr-008.md), se mantiene de manera definitiva la arquitectura de procesos efímeros de `mpv` independientes lanzados por demanda con control mediante señales `SIGTERM`/`SIGKILL` de Python.
+
 ## Objetivo
 
 Modificar `speaker-watchdog` para abandonar el modelo actual de reproducción secuencial basado en procesos `mpv` efímeros y una cola FIFO interna.

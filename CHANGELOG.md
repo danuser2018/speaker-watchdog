@@ -25,6 +25,10 @@ Los cambios se agrupan en las siguientes categorías:
 
 - Carpeta `.agent/skills` añadida con información relevante para la IA.
 
+### Cambiado
+
+- **Descarte de la arquitectura de daemon IPC**: Se ha formalizado el descarte del modelo de daemon persistente de `mpv` con sockets Unix (documentado en `docs/refactor_mpv_daemon.md`) debido a inestabilidad y desconexiones automáticas de sockets bajo entornos de aislamiento de recursos del host. Se consolida de forma definitiva el modelo de procesos efímeros e independientes de la v1.1.0 (ver ADR-008).
+
 ## [1.1.0] - 2026-06-22
 
 ### Añadido
